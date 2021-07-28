@@ -9,7 +9,9 @@ import { DeepLApi } from "./deepl";
 import * as runner from "./runnner";
 import * as reacjilator from "./reacjilator";
 
-const logLevel = (process.env.SLACK_LOG_LEVEL as LogLevel) || LogLevel.INFO;
+import { createAsyncClient } from '@mjplabs/redis-async';
+
+const logLevel = process.env.SLACK_LOG_LEVEL as LogLevel || LogLevel.INFO;
 const logger = new ConsoleLogger();
 logger.setLevel(logLevel);
 
@@ -27,6 +29,16 @@ const app = new App({
   signingSecret: process.env.SLACK_SIGNING_SECRET!!,
 });
 middleware.enableAll(app);
+
+if (process.env.REDIS_URL === undefined) {
+  console.error("REDIS_URL is not set.")
+  process.exit();
+}
+
+const redisClient = createAsyncClient(process.env.REDIS_URL)
+redisClient.on("error", function(error) {
+  console.error("[redis]", error);
+});
 
 // -----------------------------
 // shortcut
@@ -69,7 +81,8 @@ app.view("new-runner", async ({ body, ack }) => {
 // reacjilator
 // -----------------------------
 
-import { ReactionAddedEvent } from "./types/reaction-added";
+import { ReactionAddedEvent } from './types/reaction-added';
+import { ActionResponse, ActionBodyResponse } from './types/actions';
 
 app.event("reaction_added", async ({ body, client }) => {
   const event = body.event as ReactionAddedEvent;
@@ -86,23 +99,45 @@ app.event("reaction_added", async ({ body, client }) => {
     return;
   }
 
-  const replies = await reacjilator.repliesInThread(
-    client,
-    channelId,
-    messageTs
-  );
+  if (await reacjilator.isAlreadyTranslated(redisClient, channelId, messageTs, lang)) {
+    console.log(`Message was already translated to ${lang}`)
+    return
+  }
+
+  const replies = await reacjilator.repliesInThread(client, channelId, messageTs);
   if (replies.messages && replies.messages.length > 0) {
     const message = replies.messages[0];
     if (message.text) {
-      const translatedText = await deepL.translate(message.text, lang);
+      const withoutUsernames = message.text
+        .replace(/<@\S+>/gi, '👤')
+        .replace(/<!\S+>/gi, '👥');
+      const translatedText = await deepL.translate(withoutUsernames, lang);
       if (translatedText == null) {
         return;
       }
-      if (reacjilator.isAlreadyPosted(replies, translatedText)) {
-        return;
-      }
-      await reacjilator.sayInThread(client, channelId, translatedText, message);
+      await reacjilator.sayInThread(client, channelId, translatedText, message, withoutUsernames);
+      await reacjilator.markAsTranslated(redisClient, channelId, messageTs, lang)
     }
+  }
+});
+
+app.action("overflow", async ({ ack, action, body, client }) => {
+  const { selected_option } = action as ActionResponse;
+  const { container, user } = body as ActionBodyResponse;
+
+  await ack();
+
+  if (selected_option?.value === "delete" && container?.channel_id && container.message_ts && container.thread_ts && user?.id) {
+    await client.chat.delete({
+      channel: container.channel_id,
+      ts: container.message_ts
+    });
+    await client.chat.postEphemeral({
+      channel: container.channel_id,
+      user: user.id,
+      text: "I deleted the translation. I hope that’s what you really wanted!",
+      thread_ts: container.thread_ts
+    });
   }
 });
 
