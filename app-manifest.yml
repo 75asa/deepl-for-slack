@@ -27,6 +27,7 @@ oauth_config:
       - chat:write.public
       - groups:history
       - reactions:read
+      - users.profile:read
 settings:
   event_subscriptions:
     request_url: https://change-this-later.example.com/slack/events
@@ -37,4 +38,3 @@ settings:
     request_url: https://change-this-later.example.com/slack/events
   org_deploy_enabled: false
   socket_mode_enabled: false
-
