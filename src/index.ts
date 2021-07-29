@@ -32,7 +32,7 @@ middleware.enableAll(app);
 
 if (process.env.REDIS_URL === undefined) {
   console.error("REDIS_URL is not set.")
-  process.exit();
+  process.on('exit', () => process.exit());
 }
 
 const redisClient = createAsyncClient(process.env.REDIS_URL)
